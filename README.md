@@ -22,24 +22,26 @@ Em vez de apresentar apenas uma lista de arquivos, o aplicativo reúne capas, pl
 
 ### Tela principal
 
-> 📸 **Espaço reservado para uma captura da biblioteca**
->
-> Adicione a imagem em `docs/images/tela-principal.png` e substitua este bloco por:
-> `![Tela principal do Orbis XMB](docs/images/tela-principal.png)`
+<p align="center">
+  <img src="docs/images/tela-principal.png" alt="Tela principal do Orbis XMB" width="100%">
+</p>
 
 ### Detalhes e navegação
 
-> 📸 **Espaço reservado para uma captura da navegação entre jogos**
->
-> Adicione a imagem em `docs/images/navegacao.png` e substitua este bloco por:
-> `![Navegação do Orbis XMB](docs/images/navegacao.png)`
+<p align="center">
+  <img src="docs/images/navegacao.png" alt="Navegação entre jogos no Orbis XMB" width="100%">
+</p>
 
-### Configurações
+### Configurações e cores
 
-> 📸 **Espaço reservado para uma captura da tela de configurações**
->
-> Adicione a imagem em `docs/images/configuracoes.png` e substitua este bloco por:
-> `![Configurações do Orbis XMB](docs/images/configuracoes.png)`
+<p align="center">
+  <img src="docs/images/configuracoes.png" alt="Configurações do Orbis XMB em uma opção de cor" width="49%">
+  <img src="docs/images/configuracoes2.png" alt="Configurações do Orbis XMB em outra opção de cor" width="49%">
+</p>
+
+<p align="center">
+  Personalize a aparência da interface escolhendo a cor que combina com o seu ambiente.
+</p>
 
 ## Principais recursos
 
