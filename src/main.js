@@ -8,6 +8,7 @@ let mainWindow;
 const controllerStreams = new Map();
 let controllerPermissionWarningSent = false;
 let runningGame = null;
+let installingPackages = false;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -24,6 +25,161 @@ function getSettings() {
 function saveSettings(settings) {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
   fs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2));
+}
+
+function uniqueExistingDirectories(directories) {
+  const seen = new Set();
+  return directories.filter(directory => {
+    if (!directory || !fs.existsSync(directory)) return false;
+    let key;
+    try { key = fs.realpathSync(directory); }
+    catch { key = path.resolve(directory); }
+    if (process.platform === 'win32') key = key.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function rpcs3Locations(rpcs3Path) {
+  const executableDirectory = rpcs3Path ? path.dirname(rpcs3Path) : '';
+  const home = app.getPath('home');
+  const locations = [
+    { config: path.join(executableDirectory, 'config', 'vfs.yml'), emulator: executableDirectory },
+    { config: path.join(executableDirectory, 'vfs.yml'), emulator: executableDirectory }
+  ];
+
+  if (process.platform === 'linux') {
+    const configHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+    locations.push(
+      { config: path.join(configHome, 'rpcs3', 'vfs.yml'), emulator: path.join(configHome, 'rpcs3') },
+      { config: path.join(home, '.var', 'app', 'net.rpcs3.RPCS3', 'config', 'rpcs3', 'vfs.yml'), emulator: path.join(home, '.var', 'app', 'net.rpcs3.RPCS3', 'config', 'rpcs3') }
+    );
+  } else if (process.platform === 'darwin') {
+    const dataDirectory = path.join(home, 'Library', 'Application Support', 'rpcs3');
+    locations.push({ config: path.join(dataDirectory, 'vfs.yml'), emulator: dataDirectory });
+  } else if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    locations.push(
+      { config: path.join(appData, 'rpcs3', 'vfs.yml'), emulator: path.join(appData, 'rpcs3') },
+      { config: path.join(appData, 'RPCS3', 'vfs.yml'), emulator: path.join(appData, 'RPCS3') }
+    );
+  }
+
+  return locations.filter(location => location.emulator);
+}
+
+function yamlScalar(value) {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function configuredHdd0(location) {
+  if (!fs.existsSync(location.config)) return '';
+  try {
+    const vfs = fs.readFileSync(location.config, 'utf8');
+    const value = vfs.match(/^\/dev_hdd0\/:\s*(.+?)\s*$/m)?.[1];
+    if (!value) return '';
+    const expanded = yamlScalar(value)
+      .replace(/\$\(EmulatorDir\)/g, `${location.emulator}${path.sep}`)
+      .replace(/\$\(ConfigDir\)/g, `${path.dirname(location.config)}${path.sep}`);
+    return path.isAbsolute(expanded) ? path.normalize(expanded) : path.resolve(location.emulator, expanded);
+  } catch {
+    return '';
+  }
+}
+
+function rpcs3GameDirectories(settings) {
+  const discovered = [];
+  for (const location of rpcs3Locations(settings.rpcs3Path)) {
+    const hdd0 = configuredHdd0(location) || path.join(location.emulator, 'dev_hdd0');
+    discovered.push(path.join(hdd0, 'game'));
+  }
+  return uniqueExistingDirectories(discovered);
+}
+
+function gameDirectories(settings) {
+  return uniqueExistingDirectories([settings.gamesPath, ...rpcs3GameDirectories(settings)]);
+}
+
+function pathIsInside(childPath, parentPath) {
+  let child = path.resolve(childPath);
+  let parent = path.resolve(parentPath);
+  if (process.platform === 'win32') {
+    child = child.toLowerCase();
+    parent = parent.toLowerCase();
+  }
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function listGames(settings) {
+  const games = [];
+  const installedRoots = rpcs3GameDirectories(settings);
+  for (const directory of gameDirectories(settings)) walkGames(directory, games);
+  const seen = new Set();
+  return games
+    .filter(game => {
+      let key;
+      try { key = fs.realpathSync(game.path); }
+      catch { key = path.resolve(game.path); }
+      if (process.platform === 'win32') key = key.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(game => ({
+      ...game,
+      removable: game.kind === 'installed' && installedRoots.some(directory => pathIsInside(game.rootPath, directory))
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+function sendInstallProgress(progress) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('packages:progress', progress);
+  }
+}
+
+function installPackage(rpcs3Path, filePath, index, total) {
+  return new Promise(resolve => {
+    sendInstallProgress({ status: 'installing', file: path.basename(filePath), index, total });
+    const child = spawn(rpcs3Path, ['--headless', '--installpkg', filePath], {
+      detached: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const collect = chunk => {
+      output += chunk.toString();
+      if (output.length > 12000) output = output.slice(-12000);
+    };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    child.once('error', error => {
+      sendInstallProgress({ status: 'error', file: path.basename(filePath), index, total, message: error.message });
+      finish({ file: filePath, ok: false, message: error.message });
+    });
+    child.once('close', code => {
+      if (settled) return;
+      const ok = code === 0;
+      const fallback = ok
+        ? 'Instalação concluída.'
+        : `O RPCS3 encerrou com o código ${code}. Verifique se a versão instalada oferece suporte à instalação headless.`;
+      const message = output.trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] || fallback;
+      sendInstallProgress({ status: ok ? 'success' : 'error', file: path.basename(filePath), index, total, message });
+      finish({ file: filePath, ok, message });
+    });
+  });
 }
 
 function firstExisting(paths) {
@@ -103,6 +259,8 @@ function walkGames(root, results = [], depth = 0) {
       results.push({
         title: path.basename(item.name, path.extname(item.name)),
         path: fullPath,
+        rootPath: fullPath,
+        kind: 'iso',
         ...gameArtwork(fullPath, true)
       });
     }
@@ -124,6 +282,8 @@ function walkGames(root, results = [], depth = 0) {
           title: metadata.TITLE || item.name.replace(/[._]/g, ' '),
           serial: metadata.TITLE_ID || '',
           path: isInstalledGame ? installedEboot : fullPath,
+          rootPath: fullPath,
+          kind: isInstalledGame ? 'installed' : 'disc',
           ...gameArtwork(fullPath)
         });
       } else {
@@ -249,10 +409,60 @@ app.whenReady().then(() => {
     const settings = getSettings(); settings.musicPath = result.filePaths[0]; saveSettings(settings); return settings;
   });
   ipcMain.handle('music:list', () => listMusic(getSettings().musicPath));
-  ipcMain.handle('games:list', () => walkGames(getSettings().gamesPath).sort((a, b) => a.title.localeCompare(b.title)));
+  ipcMain.handle('games:list', () => listGames(getSettings()));
+  ipcMain.handle('packages:choose', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Selecionar conteúdo para instalar',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Conteúdo do RPCS3', extensions: ['pkg', 'rap', 'edat'] },
+        { name: 'Pacotes PKG', extensions: ['pkg'] },
+        { name: 'Licenças RAP e EDAT', extensions: ['rap', 'edat'] }
+      ]
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+  ipcMain.handle('packages:install', async (_event, requestedFiles) => {
+    const { rpcs3Path } = getSettings();
+    if (!rpcs3Path || !fs.existsSync(rpcs3Path)) {
+      return { ok: false, message: 'Selecione o executável do RPCS3 nas configurações.' };
+    }
+    if (runningGame && !runningGame.killed) {
+      return { ok: false, message: 'Feche o jogo em execução antes de instalar conteúdo.' };
+    }
+    if (installingPackages) {
+      return { ok: false, message: 'Já existe uma instalação em andamento.' };
+    }
+
+    const files = Array.isArray(requestedFiles)
+      ? requestedFiles
+        .filter(file => typeof file === 'string' && /\.(pkg|rap|edat)$/i.test(file) && fs.existsSync(file))
+        .slice(0, 100)
+      : [];
+    if (!files.length) return { ok: false, message: 'Nenhum arquivo PKG, RAP ou EDAT válido foi selecionado.' };
+
+    installingPackages = true;
+    const results = [];
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        results.push(await installPackage(rpcs3Path, files[index], index + 1, files.length));
+      }
+    } finally {
+      installingPackages = false;
+    }
+    const failed = results.filter(result => !result.ok);
+    return {
+      ok: failed.length === 0,
+      results,
+      message: failed.length
+        ? `${results.length - failed.length} de ${results.length} arquivo(s) instalado(s).`
+        : `${results.length} arquivo(s) instalado(s) com sucesso.`
+    };
+  });
   ipcMain.handle('game:launch', (_event, gamePath) => {
     const { rpcs3Path } = getSettings();
     if (!rpcs3Path || !fs.existsSync(rpcs3Path)) return { ok: false, message: 'Selecione o executável do RPCS3 nas configurações.' };
+    if (installingPackages) return { ok: false, message: 'Aguarde a instalação de conteúdo terminar.' };
     try {
       if (runningGame && !runningGame.killed) {
         try { runningGame.kill(); } catch {}
@@ -273,6 +483,43 @@ app.whenReady().then(() => {
       });
       return { ok: true };
     } catch (error) { return { ok: false, message: error.message }; }
+  });
+  ipcMain.handle('game:open-folder', async (_event, gamePath) => {
+    const game = listGames(getSettings()).find(candidate => candidate.path === gamePath);
+    if (!game?.rootPath || !fs.existsSync(game.rootPath)) {
+      return { ok: false, message: 'A pasta deste jogo não foi encontrada.' };
+    }
+    if (game.kind === 'iso') {
+      shell.showItemInFolder(game.rootPath);
+      return { ok: true };
+    }
+    const error = await shell.openPath(game.rootPath);
+    return error ? { ok: false, message: error } : { ok: true };
+  });
+  ipcMain.handle('game:remove-installed', async (_event, gamePath) => {
+    if (runningGame && !runningGame.killed) {
+      return { ok: false, message: 'Feche o jogo em execução antes de removê-lo.' };
+    }
+    if (installingPackages) {
+      return { ok: false, message: 'Aguarde a instalação de conteúdo terminar.' };
+    }
+
+    const settings = getSettings();
+    const game = listGames(settings).find(candidate => candidate.path === gamePath);
+    const allowedRoots = rpcs3GameDirectories(settings);
+    const canRemove = game?.kind === 'installed'
+      && game.rootPath
+      && allowedRoots.some(directory => pathIsInside(game.rootPath, directory));
+    if (!canRemove) {
+      return { ok: false, message: 'Somente jogos instalados no dev_hdd0 do RPCS3 podem ser removidos por aqui.' };
+    }
+
+    try {
+      await fs.promises.rm(game.rootPath, { recursive: true, force: false });
+      return { ok: true, message: `${game.title} foi removido do HDD do RPCS3.` };
+    } catch (error) {
+      return { ok: false, message: `Não foi possível remover o jogo: ${error.message}` };
+    }
   });
   ipcMain.handle('folder:open', () => shell.openPath(getSettings().gamesPath));
   createWindow();
