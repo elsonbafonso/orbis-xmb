@@ -7,6 +7,13 @@ let musicTracks = [], currentMusic = '';
 let musicPausedForGame = false;
 let lastControllerAction = { action: '', time: 0 };
 const gamepadState = new Map();
+const installOverlay = document.querySelector('#install-overlay');
+const gameActionsOverlay = document.querySelector('#game-actions-overlay');
+let installQueue = [];
+let installInProgress = false;
+let installFinished = false;
+let installMessage = '';
+let gameActionIndex = -1;
 const XMB_THEMES = {
   blue:   { label: 'Azul', colors: ['#0d3f7d', '#1d67ae', '#12447f', '#092345'], wave: '#bfe4ff' },
   purple: { label: 'Roxo', colors: ['#32135f', '#7448a6', '#452477', '#180a38'], wave: '#e2cfff' },
@@ -99,6 +106,176 @@ function notify(message) { const n = document.createElement('div'); n.className 
 function clock() { document.querySelector('#clock').textContent = new Intl.DateTimeFormat('pt-BR',{weekday:'short',hour:'2-digit',minute:'2-digit'}).format(new Date()); }
 setInterval(clock, 1000); clock();
 
+function fileName(filePath) {
+  return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+async function closeInstallDialog() {
+  if (installInProgress) return;
+  const shouldRefresh = installFinished;
+  installOverlay.hidden = true;
+  installQueue = [];
+  installFinished = false;
+  installMessage = '';
+  if (shouldRefresh) {
+    await wait(250);
+    await library();
+    setTimeout(() => {
+      if (currentView === 'library') library().catch(() => {});
+    }, 1500);
+  }
+}
+
+function renderInstallDialog() {
+  const rows = installQueue.map((item, index) => `
+    <div class="install-item ${item.status ? `is-${item.status}` : ''}" data-install-index="${index}">
+      <span class="install-file" title="${escapeHtml(item.path)}">${escapeHtml(fileName(item.path))}</span>
+      ${installInProgress || installFinished ? '' : `<span class="install-actions">
+        <button data-move="-1" aria-label="Mover para cima" ${index === 0 ? 'disabled' : ''}>↑</button>
+        <button data-move="1" aria-label="Mover para baixo" ${index === installQueue.length - 1 ? 'disabled' : ''}>↓</button>
+        <button data-remove aria-label="Remover">×</button>
+      </span>`}
+    </div>
+  `).join('');
+
+  installOverlay.innerHTML = `<section class="install-dialog" role="dialog" aria-modal="true" aria-labelledby="install-title">
+    <h2 id="install-title">Instalar conteúdo</h2>
+    <p>Confira os arquivos e a ordem dos pacotes antes de iniciar.
+      <span class="version-note">Requer uma versão do RPCS3 de 30/05/2026 ou posterior, com instalação headless.</span>
+    </p>
+    <div class="install-list">${rows}</div>
+    <div class="install-status">${escapeHtml(installMessage || `${installQueue.length} arquivo(s) selecionado(s).`)}</div>
+    <div class="install-dialog-controls">
+      ${installFinished
+        ? '<button id="install-close">Fechar</button>'
+        : `<button id="install-cancel" ${installInProgress ? 'disabled' : ''}>Cancelar</button><button id="install-start" ${installInProgress || !installQueue.length ? 'disabled' : ''}>${installInProgress ? 'Instalando…' : 'Instalar'}</button>`}
+    </div>
+  </section>`;
+
+  installOverlay.querySelector('#install-close')?.addEventListener('click', closeInstallDialog);
+  installOverlay.querySelector('#install-cancel')?.addEventListener('click', closeInstallDialog);
+  installOverlay.querySelector('#install-start')?.addEventListener('click', startPackageInstallation);
+  installOverlay.querySelectorAll('[data-move]').forEach(button => {
+    button.onclick = () => {
+      const index = Number(button.closest('[data-install-index]').dataset.installIndex);
+      const destination = index + Number(button.dataset.move);
+      [installQueue[index], installQueue[destination]] = [installQueue[destination], installQueue[index]];
+      renderInstallDialog();
+    };
+  });
+  installOverlay.querySelectorAll('[data-remove]').forEach(button => {
+    button.onclick = () => {
+      const index = Number(button.closest('[data-install-index]').dataset.installIndex);
+      installQueue.splice(index, 1);
+      if (!installQueue.length) return closeInstallDialog();
+      renderInstallDialog();
+    };
+  });
+}
+
+async function openPackageInstaller() {
+  if (installInProgress) return notify('Uma instalação já está em andamento.');
+  const files = await window.orbis.chooseInstallFiles();
+  if (!files.length) return;
+  installQueue = files.map(file => ({ path: file, status: '' }));
+  installFinished = false;
+  installMessage = '';
+  installOverlay.hidden = false;
+  renderInstallDialog();
+  installOverlay.querySelector('#install-start')?.focus();
+}
+
+function wait(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function refreshLibrary(preservedPath = games[selected]?.path) {
+  const refreshedGames = await window.orbis.games();
+  games = refreshedGames;
+  const preservedIndex = games.findIndex(game => game.path === preservedPath);
+  selected = preservedIndex >= 0 ? preservedIndex : Math.min(selected, Math.max(0, games.length - 1));
+  if (currentView === 'library') renderLibrary();
+}
+
+async function startPackageInstallation() {
+  if (installInProgress || !installQueue.length) return;
+  installInProgress = true;
+  installMessage = 'Preparando a instalação…';
+  renderInstallDialog();
+  let result;
+  try {
+    result = await window.orbis.installPackages(installQueue.map(item => item.path));
+  } catch (error) {
+    result = { ok: false, message: error.message || 'O processo de instalação foi interrompido.' };
+  }
+  installInProgress = false;
+  installFinished = true;
+  installMessage = result.message || (result.ok ? 'Instalação concluída.' : 'Não foi possível concluir a instalação.');
+  if (Array.isArray(result.results)) {
+    result.results.forEach((item, index) => {
+      if (installQueue[index]) installQueue[index].status = item.ok ? 'success' : 'error';
+    });
+  }
+  renderInstallDialog();
+
+}
+
+function closeGameActions() {
+  gameActionsOverlay.hidden = true;
+  gameActionsOverlay.innerHTML = '';
+  gameActionIndex = -1;
+}
+
+function renderGameActions(confirmRemoval = false) {
+  const game = games[gameActionIndex];
+  if (!game) return closeGameActions();
+  const folderIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h7l2 2h9v9H3v-11Z"/></svg>';
+  const removeIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 10v7m4-7v7"/></svg>';
+  const removalControl = game.removable
+    ? `<button id="game-remove" class="game-action-button danger-button">${removeIcon}<small>Remover</small></button>`
+    : `<button class="game-action-button" disabled title="Disponível apenas para jogos instalados no dev_hdd0">${removeIcon}<small>Remover</small></button>`;
+
+  gameActionsOverlay.innerHTML = `<section class="game-actions-dialog" role="dialog" aria-modal="true" aria-labelledby="game-actions-title">
+    <div class="game-actions-heading"><h2 id="game-actions-title">${escapeHtml(game.title)}</h2><button id="game-actions-close" class="dialog-close" aria-label="Fechar">×</button></div>
+    ${confirmRemoval
+      ? `<p>O jogo e seus arquivos instalados serão apagados do <strong>dev_hdd0</strong>. Esta ação não pode ser desfeita.</p>
+         <div class="game-actions-controls"><button id="remove-back">Voltar</button><button id="remove-confirm" class="danger-button">Remover</button></div>`
+      : `<div class="game-actions-list"><button id="game-open-folder" class="game-action-button">${folderIcon}<small>Pasta</small></button>${removalControl}</div>`}
+  </section>`;
+
+  gameActionsOverlay.onclick = event => {
+    if (event.target === gameActionsOverlay) closeGameActions();
+  };
+  gameActionsOverlay.querySelector('#game-actions-close')?.addEventListener('click', closeGameActions);
+  gameActionsOverlay.querySelector('#remove-back')?.addEventListener('click', () => renderGameActions(false));
+  gameActionsOverlay.querySelector('#game-open-folder')?.addEventListener('click', async () => {
+    const result = await window.orbis.openGameFolder(game.path);
+    if (!result.ok) notify(result.message);
+    else closeGameActions();
+  });
+  gameActionsOverlay.querySelector('#game-remove')?.addEventListener('click', () => renderGameActions(true));
+  gameActionsOverlay.querySelector('#remove-confirm')?.addEventListener('click', async event => {
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = 'Removendo…';
+    const result = await window.orbis.removeInstalledGame(game.path);
+    if (!result.ok) {
+      notify(result.message);
+      return renderGameActions(false);
+    }
+    closeGameActions();
+    notify(result.message);
+    await refreshLibrary();
+  });
+}
+
+function openGameActions(index) {
+  if (!games[index]) return;
+  gameActionIndex = index;
+  gameActionsOverlay.hidden = false;
+  renderGameActions(false);
+  gameActionsOverlay.querySelector('#game-open-folder')?.focus();
+}
+
 async function setup() {
   currentView = 'setup';
   setGameBackground(null);
@@ -138,13 +315,28 @@ function renderLibrary() {
   const shown = games.slice(Math.max(0, selected - 2), selected + 3);
   const currentGame = games[selected];
   setGameBackground(currentGame);
-  app.innerHTML = `<section class="library"><div class="section-label">BIBLIOTECA</div><div class="game-row">${shown.map(game => { const index=games.indexOf(game); const cover = game.cover ? `<img src="${escapeHtml(game.cover)}" alt="" draggable="false">` : `<div class="cover-placeholder">ORBIS</div>`; return `<article class="game ${index===selected?'active':''}" data-index="${index}" role="button" tabindex="${index === selected ? '0' : '-1'}"><div class="artwork">${cover}</div><span class="title">${escapeHtml(game.title)}</span></article>`; }).join('')}</div></section>`;
+  app.innerHTML = `<section class="library"><div class="section-label">BIBLIOTECA</div><div class="game-row">${shown.map(game => {
+    const index = games.indexOf(game);
+    const cover = game.cover ? `<img src="${escapeHtml(game.cover)}" alt="" draggable="false">` : '<div class="cover-placeholder">ORBIS</div>';
+    return `<article class="game ${index === selected ? 'active' : ''}" data-index="${index}" role="button" tabindex="${index === selected ? '0' : '-1'}">
+      <div class="artwork">${cover}<button class="game-menu-button" title="Opções do jogo" aria-label="Opções de ${escapeHtml(game.title)}">•••</button></div>
+      <span class="title">${escapeHtml(game.title)}</span>
+    </article>`;
+  }).join('')}</div></section>`;
   document.querySelectorAll('.game').forEach(el => {
     el.onclick = () => {
       const index = Number(el.dataset.index);
       if (index === selected) return play();
       selected = index;
       renderLibrary();
+    };
+    el.oncontextmenu = event => {
+      event.preventDefault();
+      openGameActions(Number(el.dataset.index));
+    };
+    el.querySelector('.game-menu-button').onclick = event => {
+      event.stopPropagation();
+      openGameActions(Number(el.dataset.index));
     };
   });
 }
@@ -171,6 +363,15 @@ function focusSetupButton(direction) {
   const next = current === -1
     ? (direction > 0 ? 0 : buttons.length - 1)
     : (current + direction + buttons.length) % buttons.length;
+  buttons[next].focus();
+  playUiSound(440);
+}
+
+function focusOverlayButton(overlay, direction) {
+  const buttons = [...overlay.querySelectorAll('button:not(:disabled)')];
+  if (!buttons.length) return;
+  const current = buttons.indexOf(document.activeElement);
+  const next = current === -1 ? 0 : (current + direction + buttons.length) % buttons.length;
   buttons[next].focus();
   playUiSound(440);
 }
@@ -295,6 +496,26 @@ function handleGamepadAction(action) {
   if (lastControllerAction.action === action && now - lastControllerAction.time < 160) return;
   lastControllerAction = { action, time: now };
   ensureAudio();
+  if (!gameActionsOverlay.hidden) {
+    if (action === 'back') closeGameActions();
+    if (action === 'up') focusOverlayButton(gameActionsOverlay, -1);
+    if (action === 'down') focusOverlayButton(gameActionsOverlay, 1);
+    if (action === 'accept') {
+      const focused = gameActionsOverlay.querySelector('button:focus') || gameActionsOverlay.querySelector('button:not(:disabled)');
+      focused?.click();
+    }
+    return;
+  }
+  if (!installOverlay.hidden) {
+    if (action === 'back') closeInstallDialog();
+    if (action === 'up') focusOverlayButton(installOverlay, -1);
+    if (action === 'down') focusOverlayButton(installOverlay, 1);
+    if (action === 'accept') {
+      const focused = installOverlay.querySelector('button:focus') || installOverlay.querySelector('button:not(:disabled)');
+      focused?.click();
+    }
+    return;
+  }
   if (action === 'exit') return window.orbis.quit();
   if (action === 'left') moveSelection(-1);
   if (action === 'right') moveSelection(1);
@@ -302,7 +523,7 @@ function handleGamepadAction(action) {
   if (action === 'down') currentView === 'setup' ? focusSetupButton(1) : playUiSound(440);
   if (action === 'accept') activatePrimary();
   if (action === 'back') goBack();
-  if (action === 'options' && currentView === 'library') setup();
+  if (action === 'options' && currentView === 'library' && games.length) openGameActions(selected);
   if (action === 'refresh' && currentView === 'library') library();
 }
 
@@ -337,6 +558,14 @@ window.addEventListener('gamepadconnected', event => {
 window.addEventListener('gamepaddisconnected', event => gamepadState.delete(event.gamepad.index));
 window.orbis.onControllerAction(handleGamepadAction);
 window.orbis.onControllerStatus(notify);
+window.orbis.onInstallProgress(progress => {
+  const item = installQueue[progress.index - 1];
+  if (item) item.status = progress.status === 'installing' ? 'active' : progress.status;
+  installMessage = progress.status === 'installing'
+    ? `Instalando ${progress.index} de ${progress.total}: ${progress.file}`
+    : progress.message || progress.file;
+  if (!installOverlay.hidden) renderInstallDialog();
+});
 window.orbis.onGameStopped(() => {
   resumeMusic();
   notify('De volta ao XMB');
@@ -344,6 +573,14 @@ window.orbis.onGameStopped(() => {
 window.addEventListener('pointerdown', ensureAudio, { once: true });
 window.addEventListener('keydown', e => {
   ensureAudio();
+  if (!installOverlay.hidden) {
+    if (e.key === 'Escape') closeInstallDialog();
+    return;
+  }
+  if (!gameActionsOverlay.hidden) {
+    if (e.key === 'Escape') closeGameActions();
+    return;
+  }
   if (e.ctrlKey && e.key.toLowerCase() === 'q') {
     e.preventDefault();
     return window.orbis.quit();
@@ -357,6 +594,8 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Escape') goBack();
 });
 
+document.querySelector('#header-install').onclick = () => { ensureAudio(); playUiSound(680); openPackageInstaller(); };
+document.querySelector('#header-refresh').onclick = async () => { ensureAudio(); playUiSound(620); await library(); };
 document.querySelector('#header-settings').onclick = () => { ensureAudio(); playUiSound(600); setup(); };
 
 function playBootSound() {

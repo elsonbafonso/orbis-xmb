@@ -8,8 +8,17 @@ contextBridge.exposeInMainWorld('orbis', {
   chooseMusic: () => ipcRenderer.invoke('settings:choose-music'),
   music: () => ipcRenderer.invoke('music:list'),
   games: () => ipcRenderer.invoke('games:list'),
+  chooseInstallFiles: () => ipcRenderer.invoke('packages:choose'),
+  installPackages: files => ipcRenderer.invoke('packages:install', files),
   launch: (gamePath) => ipcRenderer.invoke('game:launch', gamePath),
+  openGameFolder: gamePath => ipcRenderer.invoke('game:open-folder', gamePath),
+  removeInstalledGame: gamePath => ipcRenderer.invoke('game:remove-installed', gamePath),
   openFolder: () => ipcRenderer.invoke('folder:open'),
+  onInstallProgress: callback => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('packages:progress', listener);
+    return () => ipcRenderer.removeListener('packages:progress', listener);
+  },
   onGameStopped: callback => {
     const listener = () => callback();
     ipcRenderer.on('game:stopped', listener);

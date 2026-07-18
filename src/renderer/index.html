@@ -20,12 +20,20 @@
     <header>
       <span class="brand">ORBIS</span>
       <span class="header-right">
+        <button id="header-install" class="icon-button" title="Instalar PKG ou RAP" aria-label="Instalar PKG ou RAP">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5 12 2l7 3.5v8L12 17l-7-3.5v-8Zm0 0 7 3.5m7-3.5L12 9m0 0v8m-3 2h6m-3-4v7"/></svg>
+        </button>
+        <button id="header-refresh" class="icon-button" title="Atualizar biblioteca" aria-label="Atualizar biblioteca">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 7v5h-5M5 17v-5h5m8.2-3A7 7 0 0 0 6.4 6.4L5 8m.8 7A7 7 0 0 0 17.6 17l1.4-2"/></svg>
+        </button>
         <button id="header-settings" class="icon-button" title="Configurações" aria-label="Configurações">⚙</button>
         <span class="clock" id="clock"></span>
       </span>
     </header>
     <main id="app"></main>
-    <footer><span>✕ Iniciar / Selecionar</span><span>○ Voltar</span><span>△ Configurações</span><span>START Atualizar</span><span>SELECT + START Sair</span></footer>
+    <div id="install-overlay" class="install-overlay" hidden></div>
+    <div id="game-actions-overlay" class="game-actions-overlay" hidden></div>
+    <footer><span>✕ Iniciar / Selecionar</span><span>○ Voltar</span><span>△ Opções</span><span>START Atualizar</span><span>SELECT + START Sair</span></footer>
     <script src="renderer.js"></script>
   </body>
 </html>
