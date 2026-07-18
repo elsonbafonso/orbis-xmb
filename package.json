@@ -1,0 +1,36 @@
+{
+  "name": "orbis-xmb-launcher",
+  "version": "0.1.0",
+  "description": "Biblioteca local e launcher para RPCS3 com navegação inspirada em XMB.",
+  "author": "Orbis XMB",
+  "license": "MIT",
+  "desktopName": "orbis-xmb-launcher.desktop",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux AppImage",
+    "dist:linux:dir": "electron-builder --linux dir",
+    "dist:win": "electron-builder --win",
+    "dist:win:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.orbis.xmb",
+    "productName": "Orbis XMB",
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Game",
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

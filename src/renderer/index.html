@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orbis XMB</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="booting">
+    <div id="boot"><span class="boot-brand">ORBIS</span><span class="boot-sub">XMB PS3 Open-source</span></div>
+    <div class="stars"></div>
+    <svg class="xmb-waves" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <filter id="bodyGlow" x="-20%" y="-120%" width="140%" height="340%">
+          <feGaussianBlur stdDeviation="3.4" />
+        </filter>
+      </defs>
+    </svg>
+
+    <header>
+      <span class="brand">ORBIS</span>
+      <span class="header-right">
+        <button id="header-settings" class="icon-button" title="Configurações" aria-label="Configurações">⚙</button>
+        <span class="clock" id="clock"></span>
+      </span>
+    </header>
+    <main id="app"></main>
+    <footer><span>✕ Iniciar / Selecionar</span><span>○ Voltar</span><span>△ Configurações</span><span>START Atualizar</span><span>SELECT + START Sair</span></footer>
+    <script src="renderer.js"></script>
+  </body>
+</html>
